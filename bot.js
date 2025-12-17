@@ -378,34 +378,44 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'force-verify') {
         await interaction.deferReply({ ephemeral: true });
-        const user = interaction.options.getUser('user');
-        const robloxId = interaction.options.getString('robloxid');
         
-        let robloxUsername = 'Unknown';
-        try { 
-            robloxUsername = (await axios.get(`https://users.roblox.com/v1/users/${robloxId}`)).data.name; 
-        } catch (error) {
-            console.error('Error fetching Roblox username:', error);
-        }
-
-        verifications[user.id] = { 
-            status: 'verified', 
-            robloxId, 
-            robloxUsername, 
-            verifiedTimestamp: Date.now() 
-        };
-
-        console.log(`⚡ Force verified ${user.tag} (${user.id}) as ${robloxUsername} (${robloxId})`);
-
         try {
-            const member = await interaction.guild.members.fetch(user.id);
-            await member.roles.add(VERIFIED_ROLE_ID);
-        } catch (error) {
-            console.error('Error adding role:', error);
-        }
+            const user = interaction.options.getUser('user');
+            const robloxId = interaction.options.getString('robloxid');
+            
+            let robloxUsername = 'Unknown';
+            try { 
+                const response = await Promise.race([
+                    axios.get(`https://users.roblox.com/v1/users/${robloxId}`),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+                ]);
+                robloxUsername = response.data.name; 
+            } catch (error) {
+                console.error('Error fetching Roblox username:', error);
+            }
 
-        const embed = createForceVerifyEmbed(robloxUsername, robloxId);
-        await interaction.editReply({ embeds: [embed] });
+            verifications[user.id] = { 
+                status: 'verified', 
+                robloxId, 
+                robloxUsername, 
+                verifiedTimestamp: Date.now() 
+            };
+
+            console.log(`⚡ Force verified ${user.tag} (${user.id}) as ${robloxUsername} (${robloxId})`);
+
+            try {
+                const member = await interaction.guild.members.fetch(user.id);
+                await member.roles.add(VERIFIED_ROLE_ID);
+            } catch (error) {
+                console.error('Error adding role:', error);
+            }
+
+            const embed = createForceVerifyEmbed(robloxUsername, robloxId);
+            await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+            console.error('Force verify error:', error);
+            await interaction.editReply({ content: '❌ An error occurred during verification.' });
+        }
     }
 
     if (interaction.commandName === 'verification-stats') {
@@ -434,73 +444,82 @@ app.get('/health', (req, res) => {
 });
 
 app.post('/verify-webhook', async (req, res) => {
-    const { secret, robloxId, enteredCode } = req.body;
+    try {
+        const { secret, robloxId, enteredCode } = req.body;
 
-    console.log("📥 Webhook received:", { robloxId, enteredCode: enteredCode ? '✓' : '✗' });
+        console.log("📥 Webhook received:", { robloxId, enteredCode: enteredCode ? '✓' : '✗' });
 
-    if (secret !== WEBHOOK_SECRET) {
-        console.log("❌ Secret mismatch!");
-        return res.status(401).send('Unauthorized');
-    }
+        if (secret !== WEBHOOK_SECRET) {
+            console.log("❌ Secret mismatch!");
+            return res.status(401).send('Unauthorized');
+        }
 
-    const match = Object.entries(verifications).find(
-        ([_, v]) => v.tempCode === enteredCode && v.status === 'pending'
-    );
-    
-    if (!match) {
-        console.log("❌ No matching code found for:", enteredCode);
-        return res.status(400).send('Invalid or expired code');
-    }
+        const match = Object.entries(verifications).find(
+            ([_, v]) => v.tempCode === enteredCode && v.status === 'pending'
+        );
+        
+        if (!match) {
+            console.log("❌ No matching code found for:", enteredCode);
+            return res.status(400).send('Invalid or expired code');
+        }
 
-    const [discordId, record] = match;
+        const [discordId, record] = match;
 
-    if (Date.now() - record.codeTimestamp > CODE_EXPIRATION_MS) {
+        if (Date.now() - record.codeTimestamp > CODE_EXPIRATION_MS) {
+            delete record.tempCode;
+            console.log("⏰ Code expired for:", enteredCode);
+            return res.status(400).send('Code expired');
+        }
+
+        let robloxUsername = 'Unknown';
+        try { 
+            const response = await Promise.race([
+                axios.get(`https://users.roblox.com/v1/users/${robloxId}`),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+            ]);
+            robloxUsername = response.data.name; 
+        } catch (error) {
+            console.error('Error fetching Roblox username:', error);
+        }
+
+        record.status = 'verified';
+        record.robloxId = robloxId;
+        record.robloxUsername = robloxUsername;
+        record.verifiedTimestamp = Date.now();
         delete record.tempCode;
-        console.log("⏰ Code expired for:", enteredCode);
-        return res.status(400).send('Code expired');
-    }
 
-    let robloxUsername = 'Unknown';
-    try { 
-        robloxUsername = (await axios.get(`https://users.roblox.com/v1/users/${robloxId}`)).data.name; 
+        console.log(`✅ Verified user ${discordId} as ${robloxUsername} (${robloxId})`);
+
+        const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
+        const successEmbed = new EmbedBuilder()
+            .setTitle('🎊 Welcome to the Verified Community!')
+            .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
+            .setColor(colors.success)
+            .setFooter({ text: 'Enjoy exclusive perks!' })
+            .setTimestamp();
+
+        try {
+            const user = await client.users.fetch(discordId);
+            await user.send({ embeds: [completionEmbed, successEmbed] });
+            console.log(`📧 Sent verification confirmation to ${user.tag}`);
+        } catch (error) {
+            console.error('Could not send DM:', error);
+        }
+
+        try {
+            const guild = await client.guilds.fetch(GUILD_ID);
+            const member = await guild.members.fetch(discordId);
+            await member.roles.add(VERIFIED_ROLE_ID);
+            console.log(`🎭 Added verified role to ${member.user.tag}`);
+        } catch (error) {
+            console.error('Error adding role:', error);
+        }
+
+        res.send('Verified');
     } catch (error) {
-        console.error('Error fetching Roblox username:', error);
+        console.error('Webhook error:', error);
+        res.status(500).send('Internal server error');
     }
-
-    record.status = 'verified';
-    record.robloxId = robloxId;
-    record.robloxUsername = robloxUsername;
-    record.verifiedTimestamp = Date.now();
-    delete record.tempCode;
-
-    console.log(`✅ Verified user ${discordId} as ${robloxUsername} (${robloxId})`);
-
-    const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
-    const successEmbed = new EmbedBuilder()
-        .setTitle('🎊 Welcome to the Verified Community!')
-        .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
-        .setColor(colors.success)
-        .setFooter({ text: 'Enjoy exclusive perks!' })
-        .setTimestamp();
-
-    try {
-        const user = await client.users.fetch(discordId);
-        await user.send({ embeds: [completionEmbed, successEmbed] });
-        console.log(`📧 Sent verification confirmation to ${user.tag}`);
-    } catch (error) {
-        console.error('Could not send DM:', error);
-    }
-
-    try {
-        const guild = await client.guilds.fetch(GUILD_ID);
-        const member = await guild.members.fetch(discordId);
-        await member.roles.add(VERIFIED_ROLE_ID);
-        console.log(`🎭 Added verified role to ${member.user.tag}`);
-    } catch (error) {
-        console.error('Error adding role:', error);
-    }
-
-    res.send('Verified');
 });
 
 const port = process.env.PORT || 3000;
