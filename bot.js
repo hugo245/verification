@@ -6,11 +6,11 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
 });
 
-const TOKEN = process.env.DISCORD_BOT_TOKEN || 'MTQ1MDgyNDcxNjE3NTgwMjQ2Mg.GrhScc.YqsPclTEsOUOJ6hb_kNmQAKM4DElEGw5OGEFK4';
+const TOKEN = process.env.DISCORD_BOT_TOKEN 
 const ROBLOX_GAME_LINK = process.env.ROBLOX_GAME_LINK || 'https://www.roblox.com/games/YOUR_GAME_ID/Your-Game-Name';
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || 'YOUR_VERIFIED_ROLE_ID';
 const GUILD_ID = process.env.GUILD_ID || '1450577419357519902';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'MTQ.490238032cemerTM$IOIWN!!';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 const RATE_LIMIT_ATTEMPTS = 500;
 const CODE_EXPIRATION_MS = 5 * 60 * 1000;
 
