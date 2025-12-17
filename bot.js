@@ -1,5 +1,4 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
@@ -16,102 +15,92 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 const RATE_LIMIT_ATTEMPTS = 500;
 const CODE_EXPIRATION_MS = 5 * 60 * 1000;
 
+// Initialize Supabase
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_ANON_KEY
+);
+
 let verifications = {};
 
-// Initialize SQLite Database
-const db = new sqlite3.Database(path.join(__dirname, 'verifications.db'), (err) => {
-    if (err) {
-        console.error('❌ Database connection error:', err);
-    } else {
-        console.log('✅ Connected to SQLite database');
-        initializeDatabase();
+// Test Supabase connection
+const initializeDatabase = async () => {
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('count', { count: 'exact', head: true });
+        
+        if (error) throw error;
+        console.log('✅ Connected to Supabase database');
+    } catch (error) {
+        console.error('❌ Supabase connection error:', error);
     }
-});
-
-const initializeDatabase = () => {
-    db.run(`
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            discord_id TEXT UNIQUE NOT NULL,
-            discord_tag TEXT NOT NULL,
-            roblox_id TEXT NOT NULL,
-            roblox_username TEXT NOT NULL,
-            verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            verified_timestamp INTEGER NOT NULL
-        )
-    `, (err) => {
-        if (err) console.error('❌ Error creating users table:', err);
-        else console.log('✅ Users table initialized');
-    });
-
-    db.run(`
-        CREATE TABLE IF NOT EXISTS verification_attempts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            discord_id TEXT NOT NULL,
-            attempt_timestamp INTEGER NOT NULL,
-            FOREIGN KEY (discord_id) REFERENCES users(discord_id)
-        )
-    `, (err) => {
-        if (err) console.error('❌ Error creating attempts table:', err);
-        else console.log('✅ Verification attempts table initialized');
-    });
 };
 
-const dbSaveVerification = (discordId, discordTag, robloxId, robloxUsername, timestamp) => {
-    return new Promise((resolve, reject) => {
-        db.run(
-            `INSERT OR REPLACE INTO users (discord_id, discord_tag, roblox_id, roblox_username, verified_timestamp) 
-             VALUES (?, ?, ?, ?, ?)`,
-            [discordId, discordTag, robloxId, robloxUsername, timestamp],
-            (err) => {
-                if (err) {
-                    console.error('❌ Error saving verification:', err);
-                    reject(err);
-                } else {
-                    console.log(`✅ Saved verification for ${discordId}`);
-                    resolve();
-                }
-            }
-        );
-    });
+const dbSaveVerification = async (discordId, discordTag, robloxId, robloxUsername, timestamp) => {
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .upsert({
+                discord_id: discordId,
+                discord_tag: discordTag,
+                roblox_id: robloxId,
+                roblox_username: robloxUsername,
+                verified_timestamp: timestamp
+            }, { onConflict: 'discord_id' });
+        
+        if (error) throw error;
+        console.log(`✅ Saved verification for ${discordId}`);
+    } catch (error) {
+        console.error('❌ Error saving verification:', error);
+        throw error;
+    }
 };
 
-const dbGetVerification = (discordId) => {
-    return new Promise((resolve, reject) => {
-        db.get(
-            `SELECT * FROM users WHERE discord_id = ?`,
-            [discordId],
-            (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-            }
-        );
-    });
+const dbGetVerification = async (discordId) => {
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .eq('discord_id', discordId)
+            .single();
+        
+        if (error && error.code !== 'PGRST116') throw error;
+        return data || null;
+    } catch (error) {
+        console.error('❌ Error fetching verification:', error);
+        return null;
+    }
 };
 
-const dbGetAllVerified = () => {
-    return new Promise((resolve, reject) => {
-        db.all(
-            `SELECT * FROM users ORDER BY verified_at DESC`,
-            (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows || []);
-            }
-        );
-    });
+const dbGetAllVerified = async () => {
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('*')
+            .order('verified_timestamp', { ascending: false });
+        
+        if (error) throw error;
+        return data || [];
+    } catch (error) {
+        console.error('❌ Error fetching all verified users:', error);
+        return [];
+    }
 };
 
-const dbDeleteVerification = (discordId) => {
-    return new Promise((resolve, reject) => {
-        db.run(
-            `DELETE FROM users WHERE discord_id = ?`,
-            [discordId],
-            (err) => {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
-    });
+const dbDeleteVerification = async (discordId) => {
+    try {
+        const { error } = await supabase
+            .from('users')
+            .delete()
+            .eq('discord_id', discordId);
+        
+        if (error) throw error;
+        console.log(`✅ Deleted verification for ${discordId}`);
+    } catch (error) {
+        console.error('❌ Error deleting verification:', error);
+        throw error;
+    }
 };
 
 const colors = {
@@ -356,6 +345,8 @@ const createForceVerifyEmbed = (username, robloxId) => {
 client.once('ready', async () => {
     console.log('✅ Discord Bot is ready!');
     console.log(`📝 Logged in as ${client.user.tag}`);
+    
+    await initializeDatabase();
 
     const commands = [
         new SlashCommandBuilder().setName('verify').setDescription('Start Roblox verification'),
@@ -620,7 +611,7 @@ app.post('/verify-webhook', async (req, res) => {
 
         const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
         const successEmbed = new EmbedBuilder()
-            .setTitle('🎊 Welcome to the Community!')
+            .setTitle('🎊 Welcome to the Verified Community!')
             .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
             .setColor(colors.success)
             .setFooter({ text: 'Enjoy exclusive perks!' })
