@@ -1,3 +1,19 @@
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const express = require('express');
+const axios = require('axios');
+
+const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
+});
+
+const TOKEN = process.env.DISCORD_BOT_TOKEN 
+const ROBLOX_GAME_LINK = process.env.ROBLOX_GAME_LINK || 'https://www.roblox.com/games/YOUR_GAME_ID/Your-Game-Name';
+const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || 'YOUR_VERIFIED_ROLE_ID';
+const GUILD_ID = process.env.GUILD_ID || '1450577419357519902';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
+const RATE_LIMIT_ATTEMPTS = 500;
 const CODE_EXPIRATION_MS = 5 * 60 * 1000;
 
 let verifications = {};
@@ -41,7 +57,6 @@ const initializeDatabase = () => {
     });
 };
 
-// Database Helper Functions
 const dbSaveVerification = (discordId, discordTag, robloxId, robloxUsername, timestamp) => {
     return new Promise((resolve, reject) => {
         db.run(
@@ -98,49 +113,6 @@ const dbDeleteVerification = (discordId) => {
         );
     });
 };
-
-const dbRecordAttempt = (discordId, timestamp) => {
-    return new Promise((resolve, reject) => {
-        db.run(
-            `INSERT INTO verification_attempts (discord_id, attempt_timestamp) VALUES (?, ?)`,
-            [discordId, timestamp],
-            (err) => {
-                if (err) reject(err);
-                else resolve();
-            }
-        );
-    });
-};
-
-const dbGetAttempts = (discordId, withinMs) => {
-    return new Promise((resolve, reject) => {
-        db.all(
-            `SELECT attempt_timestamp FROM verification_attempts WHERE discord_id = ? AND attempt_timestamp > ?`,
-            [discordId, Date.now() - withinMs],
-            (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows || []);
-            }
-        );
-    });
-};
-
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType } = require('discord.js');
-const express = require('express');
-const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
-});
-
-const TOKEN = process.env.DISCORD_BOT_TOKEN 
-const ROBLOX_GAME_LINK = process.env.ROBLOX_GAME_LINK || 'https://www.roblox.com/games/YOUR_GAME_ID/Your-Game-Name';
-const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || 'YOUR_VERIFIED_ROLE_ID';
-const GUILD_ID = process.env.GUILD_ID || '1450577419357519902';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
-const RATE_LIMIT_ATTEMPTS = 500;
 
 const colors = {
     primary: 0x5865F2,
@@ -405,58 +377,69 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'verify') {
         await interaction.deferReply({ ephemeral: true });
 
-        if (verifications[discordId]?.status === 'verified') {
-            const embed = createAlreadyVerifiedEmbed(verifications[discordId].robloxUsername, verifications[discordId].robloxId);
-            return interaction.editReply({ embeds: [embed] });
+        try {
+            const dbUser = await dbGetVerification(discordId);
+            if (dbUser) {
+                const embed = createAlreadyVerifiedEmbed(dbUser.roblox_username, dbUser.roblox_id);
+                return interaction.editReply({ embeds: [embed] });
+            }
+
+            const now = Date.now();
+            const attempts = verifications[discordId]?.attempts || [];
+            const recent = attempts.filter(ts => now - ts < 60*60*1000);
+            if (recent.length >= RATE_LIMIT_ATTEMPTS) {
+                const embed = createRateLimitEmbed();
+                return interaction.editReply({ embeds: [embed] });
+            }
+
+            const tempCode = Math.floor(100000 + Math.random() * 900000).toString();
+            attempts.push(now);
+            verifications[discordId] = { 
+                tempCode, 
+                codeTimestamp: now, 
+                attempts, 
+                status: 'pending', 
+                robloxId: null, 
+                robloxUsername: null 
+            };
+
+            console.log(`🔑 Generated code ${tempCode} for user ${interaction.user.tag} (${discordId})`);
+
+            const initialEmbed = createInitialVerifyEmbed(tempCode, interaction.user.tag, interaction.user.displayAvatarURL());
+            const statusEmbed = createPendingStatusEmbed(tempCode);
+
+            await interaction.editReply({ embeds: [initialEmbed, statusEmbed] });
+        } catch (error) {
+            console.error('Verify error:', error);
+            await interaction.editReply({ content: '❌ An error occurred' });
         }
-
-        const now = Date.now();
-        const attempts = verifications[discordId]?.attempts || [];
-        const recent = attempts.filter(ts => now - ts < 60*60*1000);
-        if (recent.length >= RATE_LIMIT_ATTEMPTS) {
-            const embed = createRateLimitEmbed();
-            return interaction.editReply({ embeds: [embed] });
-        }
-
-        const tempCode = Math.floor(100000 + Math.random() * 900000).toString();
-        attempts.push(now);
-        verifications[discordId] = { 
-            tempCode, 
-            codeTimestamp: now, 
-            attempts, 
-            status: 'pending', 
-            robloxId: null, 
-            robloxUsername: null 
-        };
-
-        console.log(`🔑 Generated code ${tempCode} for user ${interaction.user.tag} (${discordId})`);
-
-        const initialEmbed = createInitialVerifyEmbed(tempCode, interaction.user.tag, interaction.user.displayAvatarURL());
-        const statusEmbed = createPendingStatusEmbed(tempCode);
-
-        await interaction.editReply({ embeds: [initialEmbed, statusEmbed] });
     }
 
     if (interaction.commandName === 'reset-verification') {
         await interaction.deferReply({ ephemeral: true });
-        if (verifications[discordId]) {
-            const resetEmbed = new EmbedBuilder()
-                .setTitle('🔄 Verification Reset')
-                .setDescription('Your verification has been cleared. You can verify again.')
-                .setColor(colors.warning)
-                .setFooter({ text: 'Use /verify to start again' })
-                .setTimestamp();
-            delete verifications[discordId];
-            console.log(`🔄 Reset verification for user ${interaction.user.tag} (${discordId})`);
-            await interaction.editReply({ embeds: [resetEmbed] });
-        } else {
-            const noRecordEmbed = new EmbedBuilder()
-                .setTitle('ℹ️ No Verification Found')
-                .setDescription('You don\'t have an active verification to reset.')
-                .setColor(colors.warning)
-                .setFooter({ text: 'Use /verify to start verification' })
-                .setTimestamp();
-            await interaction.editReply({ embeds: [noRecordEmbed] });
+        try {
+            if (verifications[discordId]) {
+                const resetEmbed = new EmbedBuilder()
+                    .setTitle('🔄 Verification Reset')
+                    .setDescription('Your verification has been cleared. You can verify again.')
+                    .setColor(colors.warning)
+                    .setFooter({ text: 'Use /verify to start again' })
+                    .setTimestamp();
+                delete verifications[discordId];
+                console.log(`🔄 Reset verification for user ${interaction.user.tag} (${discordId})`);
+                await interaction.editReply({ embeds: [resetEmbed] });
+            } else {
+                const noRecordEmbed = new EmbedBuilder()
+                    .setTitle('ℹ️ No Verification Found')
+                    .setDescription('You don\'t have an active verification to reset.')
+                    .setColor(colors.warning)
+                    .setFooter({ text: 'Use /verify to start verification' })
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [noRecordEmbed] });
+            }
+        } catch (error) {
+            console.error('Reset error:', error);
+            await interaction.editReply({ content: '❌ An error occurred' });
         }
     }
 
@@ -466,8 +449,7 @@ client.on('interactionCreate', async (interaction) => {
             const verifiedList = allUsers.map(user => ({
                 mention: `<@${user.discord_id}>`,
                 username: user.roblox_username,
-                robloxId: user.roblox_id,
-                verifiedAt: user.verified_timestamp
+                robloxId: user.roblox_id
             }));
 
             const embed = createVerifiedUsersEmbed(verifiedList);
@@ -480,10 +462,10 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.commandName === 'revoke-verification') {
         await interaction.deferReply({ ephemeral: true });
-        const user = interaction.options.getUser('user');
-        
         try {
+            const user = interaction.options.getUser('user');
             const userRecord = await dbGetVerification(user.id);
+            
             if (userRecord) {
                 await dbDeleteVerification(user.id);
                 console.log(`❌ Revoked verification for ${user.tag} (${user.id})`);
@@ -507,7 +489,7 @@ client.on('interactionCreate', async (interaction) => {
                 await interaction.editReply({ embeds: [notVerifiedEmbed] });
             }
         } catch (error) {
-            console.error('Revoke verification error:', error);
+            console.error('Revoke error:', error);
             await interaction.editReply({ content: '❌ An error occurred' });
         }
     }
@@ -557,12 +539,18 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'verification-stats') {
-        const total = Object.keys(verifications).length;
-        const verified = Object.values(verifications).filter(v => v.status === 'verified').length;
-        const pending = total - verified;
-        
-        const embed = createStatsEmbed(total, verified, pending);
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+        try {
+            const allUsers = await dbGetAllVerified();
+            const total = allUsers.length;
+            const verified = allUsers.filter(u => u.verified_timestamp).length;
+            const pending = 0;
+            
+            const embed = createStatsEmbed(total, verified, pending);
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+        } catch (error) {
+            console.error('Stats error:', error);
+            await interaction.reply({ content: '❌ Error fetching statistics', ephemeral: true });
+        }
     }
 });
 
