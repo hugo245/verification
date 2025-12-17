@@ -1,6 +1,135 @@
+const CODE_EXPIRATION_MS = 5 * 60 * 1000;
+
+let verifications = {};
+
+// Initialize SQLite Database
+const db = new sqlite3.Database(path.join(__dirname, 'verifications.db'), (err) => {
+    if (err) {
+        console.error('❌ Database connection error:', err);
+    } else {
+        console.log('✅ Connected to SQLite database');
+        initializeDatabase();
+    }
+});
+
+const initializeDatabase = () => {
+    db.run(`
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT UNIQUE NOT NULL,
+            discord_tag TEXT NOT NULL,
+            roblox_id TEXT NOT NULL,
+            roblox_username TEXT NOT NULL,
+            verified_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            verified_timestamp INTEGER NOT NULL
+        )
+    `, (err) => {
+        if (err) console.error('❌ Error creating users table:', err);
+        else console.log('✅ Users table initialized');
+    });
+
+    db.run(`
+        CREATE TABLE IF NOT EXISTS verification_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            discord_id TEXT NOT NULL,
+            attempt_timestamp INTEGER NOT NULL,
+            FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        )
+    `, (err) => {
+        if (err) console.error('❌ Error creating attempts table:', err);
+        else console.log('✅ Verification attempts table initialized');
+    });
+};
+
+// Database Helper Functions
+const dbSaveVerification = (discordId, discordTag, robloxId, robloxUsername, timestamp) => {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `INSERT OR REPLACE INTO users (discord_id, discord_tag, roblox_id, roblox_username, verified_timestamp) 
+             VALUES (?, ?, ?, ?, ?)`,
+            [discordId, discordTag, robloxId, robloxUsername, timestamp],
+            (err) => {
+                if (err) {
+                    console.error('❌ Error saving verification:', err);
+                    reject(err);
+                } else {
+                    console.log(`✅ Saved verification for ${discordId}`);
+                    resolve();
+                }
+            }
+        );
+    });
+};
+
+const dbGetVerification = (discordId) => {
+    return new Promise((resolve, reject) => {
+        db.get(
+            `SELECT * FROM users WHERE discord_id = ?`,
+            [discordId],
+            (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            }
+        );
+    });
+};
+
+const dbGetAllVerified = () => {
+    return new Promise((resolve, reject) => {
+        db.all(
+            `SELECT * FROM users ORDER BY verified_at DESC`,
+            (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            }
+        );
+    });
+};
+
+const dbDeleteVerification = (discordId) => {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `DELETE FROM users WHERE discord_id = ?`,
+            [discordId],
+            (err) => {
+                if (err) reject(err);
+                else resolve();
+            }
+        );
+    });
+};
+
+const dbRecordAttempt = (discordId, timestamp) => {
+    return new Promise((resolve, reject) => {
+        db.run(
+            `INSERT INTO verification_attempts (discord_id, attempt_timestamp) VALUES (?, ?)`,
+            [discordId, timestamp],
+            (err) => {
+                if (err) reject(err);
+                else resolve();
+            }
+        );
+    });
+};
+
+const dbGetAttempts = (discordId, withinMs) => {
+    return new Promise((resolve, reject) => {
+        db.all(
+            `SELECT attempt_timestamp FROM verification_attempts WHERE discord_id = ? AND attempt_timestamp > ?`,
+            [discordId, Date.now() - withinMs],
+            (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            }
+        );
+    });
+};
+
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
@@ -12,9 +141,6 @@ const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || 'YOUR_VERIFIED_ROLE_ID'
 const GUILD_ID = process.env.GUILD_ID || '1450577419357519902';
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
 const RATE_LIMIT_ATTEMPTS = 500;
-const CODE_EXPIRATION_MS = 5 * 60 * 1000;
-
-let verifications = {};
 
 const colors = {
     primary: 0x5865F2,
@@ -335,44 +461,54 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     if (interaction.commandName === 'verified-users') {
-        const verifiedList = Object.entries(verifications)
-            .filter(([_, v]) => v.status === 'verified')
-            .map(([id, v]) => ({
-                mention: `<@${id}>`,
-                username: v.robloxUsername || v.robloxId,
-                robloxId: v.robloxId
+        try {
+            const allUsers = await dbGetAllVerified();
+            const verifiedList = allUsers.map(user => ({
+                mention: `<@${user.discord_id}>`,
+                username: user.roblox_username,
+                robloxId: user.roblox_id,
+                verifiedAt: user.verified_timestamp
             }));
 
-        const embed = createVerifiedUsersEmbed(verifiedList);
-        await interaction.reply({ embeds: [embed], ephemeral: true });
+            const embed = createVerifiedUsersEmbed(verifiedList);
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+        } catch (error) {
+            console.error('Error fetching verified users:', error);
+            await interaction.reply({ content: '❌ Error fetching verified users', ephemeral: true });
+        }
     }
 
     if (interaction.commandName === 'revoke-verification') {
         await interaction.deferReply({ ephemeral: true });
         const user = interaction.options.getUser('user');
-        if (verifications[user.id]?.status === 'verified') {
-            const username = verifications[user.id].robloxUsername;
-            const robloxId = verifications[user.id].robloxId;
-            delete verifications[user.id];
-            console.log(`❌ Revoked verification for ${user.tag} (${user.id})`);
-            
-            try {
-                const member = await interaction.guild.members.fetch(user.id);
-                await member.roles.remove(VERIFIED_ROLE_ID);
-            } catch (error) {
-                console.error('Error removing role:', error);
+        
+        try {
+            const userRecord = await dbGetVerification(user.id);
+            if (userRecord) {
+                await dbDeleteVerification(user.id);
+                console.log(`❌ Revoked verification for ${user.tag} (${user.id})`);
+                
+                try {
+                    const member = await interaction.guild.members.fetch(user.id);
+                    await member.roles.remove(VERIFIED_ROLE_ID);
+                } catch (error) {
+                    console.error('Error removing role:', error);
+                }
+                
+                const embed = createRevocationEmbed(userRecord.roblox_username, userRecord.roblox_id);
+                await interaction.editReply({ embeds: [embed] });
+            } else {
+                const notVerifiedEmbed = new EmbedBuilder()
+                    .setTitle('ℹ️ User Not Verified')
+                    .setDescription(`${user.tag} is not verified yet.`)
+                    .setColor(colors.warning)
+                    .setFooter({ text: 'No action taken' })
+                    .setTimestamp();
+                await interaction.editReply({ embeds: [notVerifiedEmbed] });
             }
-            
-            const embed = createRevocationEmbed(username, robloxId);
-            await interaction.editReply({ embeds: [embed] });
-        } else {
-            const notVerifiedEmbed = new EmbedBuilder()
-                .setTitle('ℹ️ User Not Verified')
-                .setDescription(`${user.tag} is not verified yet.`)
-                .setColor(colors.warning)
-                .setFooter({ text: 'No action taken' })
-                .setTimestamp();
-            await interaction.editReply({ embeds: [notVerifiedEmbed] });
+        } catch (error) {
+            console.error('Revoke verification error:', error);
+            await interaction.editReply({ content: '❌ An error occurred' });
         }
     }
 
@@ -400,6 +536,8 @@ client.on('interactionCreate', async (interaction) => {
                 robloxUsername, 
                 verifiedTimestamp: Date.now() 
             };
+
+            await dbSaveVerification(user.id, user.tag, robloxId, robloxUsername, Date.now());
 
             console.log(`⚡ Force verified ${user.tag} (${user.id}) as ${robloxUsername} (${robloxId})`);
 
@@ -445,7 +583,7 @@ app.get('/health', (req, res) => {
 
 app.post('/verify-webhook', async (req, res) => {
     try {
-        const { secret, robloxId, enteredCode } = req.body;
+        const { secret, robloxId, enteredCode, discordTag } = req.body;
 
         console.log("📥 Webhook received:", { robloxId, enteredCode: enteredCode ? '✓' : '✗' });
 
@@ -487,6 +625,8 @@ app.post('/verify-webhook', async (req, res) => {
         record.robloxUsername = robloxUsername;
         record.verifiedTimestamp = Date.now();
         delete record.tempCode;
+
+        await dbSaveVerification(discordId, discordTag || 'Unknown', robloxId, robloxUsername, Date.now());
 
         console.log(`✅ Verified user ${discordId} as ${robloxUsername} (${robloxId})`);
 
