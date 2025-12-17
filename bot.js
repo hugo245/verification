@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits, ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelType, ComponentType } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
 
@@ -16,17 +16,256 @@ const CODE_EXPIRATION_MS = 5 * 60 * 1000;
 
 let verifications = {};
 
+const colors = {
+    primary: 0x5865F2,
+    success: 0x57F287,
+    warning: 0xFEE75C,
+    error: 0xED4245,
+    pending: 0x5865F2,
+    verified: 0x57F287
+};
+
+const createInitialVerifyEmbed = (tempCode, userTag, userAvatar) => {
+    return new EmbedBuilder()
+        .setTitle('🎮 Roblox Verification Protocol')
+        .setDescription('Welcome to the advanced verification system. Follow the steps below to link your Roblox account.')
+        .addFields(
+            {
+                name: '📍 Step 1: Join the Game',
+                value: `[Click here to join](${ROBLOX_GAME_LINK})`,
+                inline: false
+            },
+            {
+                name: '🔑 Step 2: Enter Your Code',
+                value: `\`\`\`${tempCode}\`\`\`\nThis code is **case-sensitive** and valid for 5 minutes`,
+                inline: false
+            },
+            {
+                name: '⚡ Next Steps',
+                value: 'Wait for the game to verify your account. You\'ll receive a confirmation once complete.',
+                inline: false
+            }
+        )
+        .setColor(colors.primary)
+        .setThumbnail(userAvatar)
+        .setAuthor({ name: userTag })
+        .setFooter({ text: '⏱️ Expires in 5 minutes' })
+        .setTimestamp();
+};
+
+const createPendingStatusEmbed = (tempCode) => {
+    return new EmbedBuilder()
+        .setTitle('⏳ Verification in Progress')
+        .setDescription('Your verification is being processed. Here\'s your status:')
+        .addFields(
+            {
+                name: '🔐 Your Code',
+                value: `\`${tempCode}\``,
+                inline: true
+            },
+            {
+                name: '⏰ Time Remaining',
+                value: '~5 minutes',
+                inline: true
+            },
+            {
+                name: '📊 Status',
+                value: 'Waiting for game confirmation...',
+                inline: false
+            }
+        )
+        .setColor(colors.pending)
+        .setFooter({ text: 'Please complete the steps above' })
+        .setTimestamp();
+};
+
+const createVerificationCompleteEmbed = (robloxUsername, robloxId, verifiedAt) => {
+    return new EmbedBuilder()
+        .setTitle('✅ Verification Successful!')
+        .setDescription('Your Roblox account has been verified and linked to your Discord.')
+        .addFields(
+            {
+                name: '👤 Roblox Username',
+                value: `**${robloxUsername}**`,
+                inline: true
+            },
+            {
+                name: '🆔 Roblox ID',
+                value: `\`${robloxId}\``,
+                inline: true
+            },
+            {
+                name: '🎉 Verified At',
+                value: `<t:${Math.floor(verifiedAt / 1000)}:F>`,
+                inline: false
+            },
+            {
+                name: '✨ Benefits',
+                value: 'You now have access to verified-only channels and features!',
+                inline: false
+            }
+        )
+        .setColor(colors.success)
+        .setFooter({ text: 'Welcome to the verified community!' })
+        .setTimestamp();
+};
+
+const createAlreadyVerifiedEmbed = (robloxUsername, robloxId) => {
+    return new EmbedBuilder()
+        .setTitle('ℹ️ Already Verified')
+        .setDescription('Your Discord account is already linked to a Roblox account.')
+        .addFields(
+            {
+                name: '👤 Linked Account',
+                value: `**${robloxUsername}** (\`${robloxId}\`)`,
+                inline: true
+            },
+            {
+                name: '🔄 Reset',
+                value: 'Use `/reset-verification` if you need to unlink and reverify.',
+                inline: false
+            }
+        )
+        .setColor(colors.warning)
+        .setFooter({ text: 'Contact staff if you need assistance' })
+        .setTimestamp();
+};
+
+const createRateLimitEmbed = () => {
+    return new EmbedBuilder()
+        .setTitle('⚠️ Rate Limit Exceeded')
+        .setDescription('You\'ve exceeded the maximum verification attempts.')
+        .addFields(
+            {
+                name: '⏱️ Cooldown',
+                value: 'Please wait 1 hour before attempting again.',
+                inline: false
+            },
+            {
+                name: '📞 Need Help?',
+                value: 'Contact server staff if this is an error.',
+                inline: false
+            }
+        )
+        .setColor(colors.error)
+        .setFooter({ text: 'Rate limit protection enabled' })
+        .setTimestamp();
+};
+
+const createVerifiedUsersEmbed = (verifiedList) => {
+    const list = verifiedList.length > 0 
+        ? verifiedList.map(item => `${item.mention} → **${item.username}** (\`${item.robloxId}\`)`).join('\n')
+        : '*No verified users yet*';
+    
+    return new EmbedBuilder()
+        .setTitle('👥 Verified Users List')
+        .setDescription(list)
+        .setColor(colors.primary)
+        .setFooter({ text: `Total: ${verifiedList.length} verified users` })
+        .setTimestamp();
+};
+
+const createStatsEmbed = (total, verified, pending) => {
+    const verificationRate = total > 0 ? ((verified / total) * 100).toFixed(1) : 0;
+    
+    return new EmbedBuilder()
+        .setTitle('📊 Verification Statistics')
+        .setDescription('Comprehensive overview of the verification system.')
+        .addFields(
+            {
+                name: '📝 Total Records',
+                value: `${total}`,
+                inline: true
+            },
+            {
+                name: '✅ Verified',
+                value: `${verified}`,
+                inline: true
+            },
+            {
+                name: '⏳ Pending',
+                value: `${pending}`,
+                inline: true
+            },
+            {
+                name: '📈 Verification Rate',
+                value: `${verificationRate}%`,
+                inline: true
+            },
+            {
+                name: '🤖 Bot Status',
+                value: '`Online & Operational`',
+                inline: true
+            },
+            {
+                name: '🕐 Last Updated',
+                value: `<t:${Math.floor(Date.now() / 1000)}:R>`,
+                inline: true
+            }
+        )
+        .setColor(colors.success)
+        .setFooter({ text: 'System Status: All Systems Operational' })
+        .setTimestamp();
+};
+
+const createRevocationEmbed = (username, robloxId) => {
+    return new EmbedBuilder()
+        .setTitle('❌ Verification Revoked')
+        .setDescription('User verification has been revoked.')
+        .addFields(
+            {
+                name: '👤 Revoked Account',
+                value: `**${username}** (\`${robloxId}\`)`,
+                inline: true
+            },
+            {
+                name: '🔐 Role Status',
+                value: 'Verified role removed',
+                inline: true
+            }
+        )
+        .setColor(colors.error)
+        .setFooter({ text: 'Action completed by admin' })
+        .setTimestamp();
+};
+
+const createForceVerifyEmbed = (username, robloxId) => {
+    return new EmbedBuilder()
+        .setTitle('⚡ Force Verification Applied')
+        .setDescription('User has been manually verified.')
+        .addFields(
+            {
+                name: '👤 Roblox Account',
+                value: `**${username}**`,
+                inline: true
+            },
+            {
+                name: '🆔 Roblox ID',
+                value: `\`${robloxId}\``,
+                inline: true
+            },
+            {
+                name: '🎭 Role Status',
+                value: 'Verified role assigned',
+                inline: false
+            }
+        )
+        .setColor(colors.success)
+        .setFooter({ text: 'Manual verification completed' })
+        .setTimestamp();
+};
+
 client.once('ready', async () => {
     console.log('✅ Discord Bot is ready!');
     console.log(`📝 Logged in as ${client.user.tag}`);
 
     const commands = [
         new SlashCommandBuilder().setName('verify').setDescription('Start Roblox verification'),
-        new SlashCommandBuilder().setName('reset-verification').setDescription('Reset verification'),
-        new SlashCommandBuilder().setName('verified-users').setDescription('List verified users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-        new SlashCommandBuilder().setName('revoke-verification').setDescription('Revoke verification').addUserOption(opt => opt.setName('user').setDescription('User to revoke').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-        new SlashCommandBuilder().setName('force-verify').setDescription('Force verify a user').addUserOption(opt => opt.setName('user').setDescription('User').setRequired(true)).addStringOption(opt => opt.setName('robloxid').setDescription('Roblox ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-        new SlashCommandBuilder().setName('verification-stats').setDescription('Server stats').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder().setName('reset-verification').setDescription('Reset your verification'),
+        new SlashCommandBuilder().setName('verified-users').setDescription('List all verified users').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder().setName('revoke-verification').setDescription('Revoke user verification').addUserOption(opt => opt.setName('user').setDescription('User to revoke').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder().setName('force-verify').setDescription('Manually verify a user').addUserOption(opt => opt.setName('user').setDescription('User to verify').setRequired(true)).addStringOption(opt => opt.setName('robloxid').setDescription('Roblox ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder().setName('verification-stats').setDescription('View verification statistics').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
     ];
 
     await client.application.commands.set(commands);
@@ -41,14 +280,16 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.deferReply({ ephemeral: true });
 
         if (verifications[discordId]?.status === 'verified') {
-            return interaction.editReply({ content: '✅ Already verified.' });
+            const embed = createAlreadyVerifiedEmbed(verifications[discordId].robloxUsername, verifications[discordId].robloxId);
+            return interaction.editReply({ embeds: [embed] });
         }
 
         const now = Date.now();
         const attempts = verifications[discordId]?.attempts || [];
         const recent = attempts.filter(ts => now - ts < 60*60*1000);
         if (recent.length >= RATE_LIMIT_ATTEMPTS) {
-            return interaction.editReply({ content: '⚠️ Rate limit reached. Try again later.' });
+            const embed = createRateLimitEmbed();
+            return interaction.editReply({ embeds: [embed] });
         }
 
         const tempCode = Math.floor(100000 + Math.random() * 900000).toString();
@@ -64,40 +305,54 @@ client.on('interactionCreate', async (interaction) => {
 
         console.log(`🔑 Generated code ${tempCode} for user ${interaction.user.tag} (${discordId})`);
 
-        const embed = new EmbedBuilder()
-            .setTitle('🎮 Roblox Verification')
-            .setDescription(`**Follow these steps:**\n\n1️⃣ Join the Roblox game: [Click Here](${ROBLOX_GAME_LINK})\n2️⃣ Enter this code: **${tempCode}**\n\n⏱️ Code expires in 5 minutes`)
-            .setColor(0xFFFF00)
-            .setThumbnail(interaction.user.displayAvatarURL())
-            .setFooter({ text: 'Code is case-sensitive' })
-            .setTimestamp();
+        const initialEmbed = createInitialVerifyEmbed(tempCode, interaction.user.tag, interaction.user.displayAvatarURL());
+        const statusEmbed = createPendingStatusEmbed(tempCode);
 
-        await interaction.editReply({ embeds: [embed] });
+        await interaction.editReply({ embeds: [initialEmbed, statusEmbed] });
     }
 
     if (interaction.commandName === 'reset-verification') {
         await interaction.deferReply({ ephemeral: true });
         if (verifications[discordId]) {
+            const resetEmbed = new EmbedBuilder()
+                .setTitle('🔄 Verification Reset')
+                .setDescription('Your verification has been cleared. You can verify again.')
+                .setColor(colors.warning)
+                .setFooter({ text: 'Use /verify to start again' })
+                .setTimestamp();
             delete verifications[discordId];
             console.log(`🔄 Reset verification for user ${interaction.user.tag} (${discordId})`);
-            await interaction.editReply({ content: '✅ Reset complete. You can verify again.' });
+            await interaction.editReply({ embeds: [resetEmbed] });
         } else {
-            await interaction.editReply({ content: '⚠️ No verification found.' });
+            const noRecordEmbed = new EmbedBuilder()
+                .setTitle('ℹ️ No Verification Found')
+                .setDescription('You don\'t have an active verification to reset.')
+                .setColor(colors.warning)
+                .setFooter({ text: 'Use /verify to start verification' })
+                .setTimestamp();
+            await interaction.editReply({ embeds: [noRecordEmbed] });
         }
     }
 
     if (interaction.commandName === 'verified-users') {
-        const list = Object.entries(verifications)
+        const verifiedList = Object.entries(verifications)
             .filter(([_, v]) => v.status === 'verified')
-            .map(([id, v]) => `<@${id}> → **${v.robloxUsername || v.robloxId}**`)
-            .join('\n') || 'None';
-        await interaction.reply({ content: `**Verified Users:**\n${list}`, ephemeral: true });
+            .map(([id, v]) => ({
+                mention: `<@${id}>`,
+                username: v.robloxUsername || v.robloxId,
+                robloxId: v.robloxId
+            }));
+
+        const embed = createVerifiedUsersEmbed(verifiedList);
+        await interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     if (interaction.commandName === 'revoke-verification') {
         await interaction.deferReply({ ephemeral: true });
         const user = interaction.options.getUser('user');
         if (verifications[user.id]?.status === 'verified') {
+            const username = verifications[user.id].robloxUsername;
+            const robloxId = verifications[user.id].robloxId;
             delete verifications[user.id];
             console.log(`❌ Revoked verification for ${user.tag} (${user.id})`);
             
@@ -108,9 +363,16 @@ client.on('interactionCreate', async (interaction) => {
                 console.error('Error removing role:', error);
             }
             
-            await interaction.editReply({ content: `✅ Revoked verification for ${user.tag}.` });
+            const embed = createRevocationEmbed(username, robloxId);
+            await interaction.editReply({ embeds: [embed] });
         } else {
-            await interaction.editReply({ content: '⚠️ User not verified.' });
+            const notVerifiedEmbed = new EmbedBuilder()
+                .setTitle('ℹ️ User Not Verified')
+                .setDescription(`${user.tag} is not verified yet.`)
+                .setColor(colors.warning)
+                .setFooter({ text: 'No action taken' })
+                .setTimestamp();
+            await interaction.editReply({ embeds: [notVerifiedEmbed] });
         }
     }
 
@@ -142,7 +404,8 @@ client.on('interactionCreate', async (interaction) => {
             console.error('Error adding role:', error);
         }
 
-        await interaction.editReply({ content: `✅ Force verified ${user.tag} as **${robloxUsername}**` });
+        const embed = createForceVerifyEmbed(robloxUsername, robloxId);
+        await interaction.editReply({ embeds: [embed] });
     }
 
     if (interaction.commandName === 'verification-stats') {
@@ -150,16 +413,7 @@ client.on('interactionCreate', async (interaction) => {
         const verified = Object.values(verifications).filter(v => v.status === 'verified').length;
         const pending = total - verified;
         
-        const embed = new EmbedBuilder()
-            .setTitle('📊 Verification Statistics')
-            .addFields(
-                { name: '📝 Total Records', value: `${total}`, inline: true },
-                { name: '✅ Verified', value: `${verified}`, inline: true },
-                { name: '⏳ Pending', value: `${pending}`, inline: true }
-            )
-            .setColor(0x00FF00)
-            .setTimestamp();
-
+        const embed = createStatsEmbed(total, verified, pending);
         await interaction.reply({ embeds: [embed], ephemeral: true });
     }
 });
@@ -186,8 +440,6 @@ app.post('/verify-webhook', async (req, res) => {
 
     if (secret !== WEBHOOK_SECRET) {
         console.log("❌ Secret mismatch!");
-        console.log("Expected:", WEBHOOK_SECRET);
-        console.log("Received:", secret);
         return res.status(401).send('Unauthorized');
     }
 
@@ -197,7 +449,6 @@ app.post('/verify-webhook', async (req, res) => {
     
     if (!match) {
         console.log("❌ No matching code found for:", enteredCode);
-        console.log("Available codes:", Object.values(verifications).filter(v => v.status === 'pending').map(v => v.tempCode));
         return res.status(400).send('Invalid or expired code');
     }
 
@@ -224,16 +475,18 @@ app.post('/verify-webhook', async (req, res) => {
 
     console.log(`✅ Verified user ${discordId} as ${robloxUsername} (${robloxId})`);
 
-    const embed = new EmbedBuilder()
-        .setTitle('✅ Roblox Verification Complete')
-        .setDescription(`You've been verified as **${robloxUsername}**\nRoblox ID: ${robloxId}`)
-        .setColor(0x00FF00)
+    const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
+    const successEmbed = new EmbedBuilder()
+        .setTitle('🎊 Welcome to the Verified Community!')
+        .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
+        .setColor(colors.success)
+        .setFooter({ text: 'Enjoy exclusive perks!' })
         .setTimestamp();
 
     try {
         const user = await client.users.fetch(discordId);
-        await user.send({ embeds: [embed] });
-        console.log(`📧 Sent DM to ${user.tag}`);
+        await user.send({ embeds: [completionEmbed, successEmbed] });
+        console.log(`📧 Sent verification confirmation to ${user.tag}`);
     } catch (error) {
         console.error('Could not send DM:', error);
     }
