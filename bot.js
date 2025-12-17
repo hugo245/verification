@@ -620,7 +620,7 @@ app.post('/verify-webhook', async (req, res) => {
 
         const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
         const successEmbed = new EmbedBuilder()
-            .setTitle('🎊 Welcome to the Verified Community!')
+            .setTitle('🎊 Welcome to the Community!')
             .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
             .setColor(colors.success)
             .setFooter({ text: 'Enjoy exclusive perks!' })
