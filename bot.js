@@ -7,13 +7,16 @@ const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
 });
 
-const TOKEN = process.env.DISCORD_BOT_TOKEN 
+const TOKEN = process.env.DISCORD_BOT_TOKEN;
 const ROBLOX_GAME_LINK = process.env.ROBLOX_GAME_LINK || 'https://www.roblox.com/games/YOUR_GAME_ID/Your-Game-Name';
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID || 'YOUR_VERIFIED_ROLE_ID';
 const GUILD_ID = process.env.GUILD_ID || '1450577419357519902';
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 const RATE_LIMIT_ATTEMPTS = 500;
 const CODE_EXPIRATION_MS = 5 * 60 * 1000;
+const UNIVERSE_ID = process.env.UNIVERSE_ID || 'YOUR_UNIVERSE_ID';
+const ROBLOX_API_KEY = process.env.ROBLOX_API_KEY;
+const DATASTORE_NAME = process.env.DATASTORE_NAME || 'Leaderboard';
 
 // Initialize Supabase
 const supabase = createClient(
@@ -355,6 +358,7 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('revoke-verification').setDescription('Revoke user verification').addUserOption(opt => opt.setName('user').setDescription('User to revoke').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
         new SlashCommandBuilder().setName('force-verify').setDescription('Manually verify a user').addUserOption(opt => opt.setName('user').setDescription('User to verify').setRequired(true)).addStringOption(opt => opt.setName('robloxid').setDescription('Roblox ID').setRequired(true)).setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
         new SlashCommandBuilder().setName('verification-stats').setDescription('View verification statistics').setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+        new SlashCommandBuilder().setName('leaderboard').setDescription('View the game leaderboard'),
     ];
 
     await client.application.commands.set(commands);
@@ -409,14 +413,25 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.commandName === 'reset-verification') {
         await interaction.deferReply({ ephemeral: true });
         try {
-            if (verifications[discordId]) {
+            const dbUser = await dbGetVerification(discordId);
+            if (dbUser || verifications[discordId]) {
+                if (dbUser) {
+                    await dbDeleteVerification(discordId);
+                }
+                if (verifications[discordId]) {
+                    delete verifications[discordId];
+                }
+
+                const member = await interaction.guild.members.fetch(interaction.user.id);
+                await member.roles.remove(VERIFIED_ROLE_ID).catch(console.error);
+
                 const resetEmbed = new EmbedBuilder()
                     .setTitle('🔄 Verification Reset')
                     .setDescription('Your verification has been cleared. You can verify again.')
                     .setColor(colors.warning)
                     .setFooter({ text: 'Use /verify to start again' })
                     .setTimestamp();
-                delete verifications[discordId];
+
                 console.log(`🔄 Reset verification for user ${interaction.user.tag} (${discordId})`);
                 await interaction.editReply({ embeds: [resetEmbed] });
             } else {
@@ -543,6 +558,55 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ content: '❌ Error fetching statistics', ephemeral: true });
         }
     }
+
+    if (interaction.commandName === 'leaderboard') {
+        await interaction.deferReply({ ephemeral: true });
+
+        if (!ROBLOX_API_KEY || !UNIVERSE_ID) {
+            return interaction.editReply({ content: '❌ Leaderboard feature is not configured properly.' });
+        }
+
+        try {
+            const response = await axios.get(
+                `https://apis.roblox.com/ordered-data-stores/v1/universes/${UNIVERSE_ID}/orderedDatastores/${DATASTORE_NAME}/scopes/global/entries?limit=10&sortOrder=Descending`,
+                { headers: { 'x-api-key': ROBLOX_API_KEY } }
+            );
+
+            const entries = response.data.entries;
+
+            if (!entries || entries.length === 0) {
+                return interaction.editReply({ content: 'No leaderboard data available.' });
+            }
+
+            const leaderboardItems = [];
+            for (const entry of entries) {
+                const userId = entry.id; // Assuming the entry ID is the Roblox user ID
+                let username = 'Unknown';
+                try {
+                    const userResponse = await Promise.race([
+                        axios.get(`https://users.roblox.com/v1/users/${userId}`),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+                    ]);
+                    username = userResponse.data.name;
+                } catch (e) {
+                    console.error('Error fetching Roblox username for leaderboard:', e);
+                }
+                leaderboardItems.push(`**${username}** (${userId}): ${entry.value}`);
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🏆 Game Leaderboard')
+                .setDescription(leaderboardItems.join('\n'))
+                .setColor(colors.primary)
+                .setFooter({ text: 'Top 10 players' })
+                .setTimestamp();
+
+            await interaction.editReply({ embeds: [embed] });
+        } catch (error) {
+            console.error('Leaderboard fetch error:', error);
+            await interaction.editReply({ content: 'Failed to fetch leaderboard.' });
+        }
+    }
 });
 
 const app = express();
@@ -611,7 +675,7 @@ app.post('/verify-webhook', async (req, res) => {
 
         const completionEmbed = createVerificationCompleteEmbed(robloxUsername, robloxId, Date.now());
         const successEmbed = new EmbedBuilder()
-            .setTitle('🎊 Welcome to the Verified Community!')
+            .setTitle('🎊 Welcome to the Community!')
             .setDescription('You\'ve successfully linked your Roblox account and unlocked new privileges.')
             .setColor(colors.success)
             .setFooter({ text: 'Enjoy exclusive perks!' })
