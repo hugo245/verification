@@ -395,7 +395,9 @@ client.on('interactionCreate', async (interaction) => {
                 attempts, 
                 status: 'pending', 
                 robloxId: null, 
-                robloxUsername: null 
+                robloxUsername: null,
+                discordTag: interaction.user.tag,
+                discordAvatar: interaction.user.displayAvatarURL({ format: 'png', size: 256 })
             };
 
             console.log(`🔑 Generated code ${tempCode} for user ${interaction.user.tag} (${discordId})`);
@@ -580,7 +582,7 @@ client.on('interactionCreate', async (interaction) => {
 
             const leaderboardItems = [];
             for (const entry of entries) {
-                const userId = entry.id; // Assuming the entry ID is the Roblox user ID
+                const userId = entry.id;
                 let username = 'Unknown';
                 try {
                     const userResponse = await Promise.race([
@@ -624,15 +626,63 @@ app.get('/health', (req, res) => {
     });
 });
 
+// NEW: Check code endpoint - returns Discord info for confirmation screen
+app.post('/check-code', async (req, res) => {
+    try {
+        const { secret, enteredCode } = req.body;
+
+        console.log("🔍 Code check received:", { enteredCode: enteredCode ? '✓' : '✗' });
+
+        if (secret !== WEBHOOK_SECRET) {
+            console.log("❌ Secret mismatch!");
+            return res.status(401).json({ success: false, error: 'Unauthorized' });
+        }
+
+        const match = Object.entries(verifications).find(
+            ([_, v]) => v.tempCode === enteredCode && v.status === 'pending'
+        );
+        
+        if (!match) {
+            console.log("❌ No matching code found for:", enteredCode);
+            return res.status(400).json({ success: false, error: 'Invalid or expired code' });
+        }
+
+        const [discordId, record] = match;
+
+        if (Date.now() - record.codeTimestamp > CODE_EXPIRATION_MS) {
+            console.log("⏰ Code expired for:", enteredCode);
+            return res.status(400).json({ success: false, error: 'Code expired' });
+        }
+
+        // Return Discord user info for confirmation screen
+        console.log(`✅ Code valid for ${discordId}`);
+        res.json({
+            success: true,
+            discordId: discordId,
+            discordTag: record.discordTag,
+            discordAvatar: record.discordAvatar
+        });
+    } catch (error) {
+        console.error('Check code error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+    }
+});
+
+// UPDATED: Verify webhook - now expects confirmation
 app.post('/verify-webhook', async (req, res) => {
     try {
-        const { secret, robloxId, enteredCode, discordTag } = req.body;
+        const { secret, robloxId, enteredCode, discordTag, confirmed } = req.body;
 
-        console.log("📥 Webhook received:", { robloxId, enteredCode: enteredCode ? '✓' : '✗' });
+        console.log("📥 Webhook received:", { robloxId, enteredCode: enteredCode ? '✓' : '✗', confirmed });
 
         if (secret !== WEBHOOK_SECRET) {
             console.log("❌ Secret mismatch!");
             return res.status(401).send('Unauthorized');
+        }
+
+        if (!confirmed) {
+            console.log("❌ Verification not confirmed by user");
+            return res.status(400).send('Verification not confirmed');
         }
 
         const match = Object.entries(verifications).find(
@@ -669,7 +719,7 @@ app.post('/verify-webhook', async (req, res) => {
         record.verifiedTimestamp = Date.now();
         delete record.tempCode;
 
-        await dbSaveVerification(discordId, discordTag || 'Unknown', robloxId, robloxUsername, Date.now());
+        await dbSaveVerification(discordId, discordTag || record.discordTag || 'Unknown', robloxId, robloxUsername, Date.now());
 
         console.log(`✅ Verified user ${discordId} as ${robloxUsername} (${robloxId})`);
 
