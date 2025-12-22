@@ -665,13 +665,20 @@ app.post('/check-code', async (req, res) => {
             console.error('Error fetching Roblox username:', error);
         }
 
-        // Fetch Discord avatar and ensure it's PNG format
+        // Create proxy URL for Roblox (doesn't require Mesh/Image API)
+        let discordAvatarProxy = null;
         let avatarBase64 = null;
+        
         if (record.discordAvatar) {
+            // Create proxy URL
+            const cleanUrl = record.discordAvatar.replace(/^https?:\/\//, '');
+            discordAvatarProxy = `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}&w=128&h=128&fit=cover&output=png`;
+            console.log('🔗 Proxy URL created:', discordAvatarProxy);
+            
+            // Also fetch and convert to base64 for backup
             try {
                 console.log('📥 Fetching avatar from:', record.discordAvatar);
                 
-                // Fetch the avatar
                 const avatarResponse = await axios.get(record.discordAvatar, {
                     responseType: 'arraybuffer',
                     timeout: 10000,
@@ -681,33 +688,19 @@ app.post('/check-code', async (req, res) => {
                 });
                 
                 console.log('✅ Avatar fetched, size:', avatarResponse.data.byteLength, 'bytes');
-                console.log('📋 Content-Type:', avatarResponse.headers['content-type']);
                 
-                // Convert to PNG using sharp (handles WebP, JPEG, PNG, etc.)
+                // Convert to PNG using sharp
                 const pngBuffer = await sharp(avatarResponse.data)
-                    .resize(128, 128) // Resize to reasonable size
-                    .png() // Convert to PNG
+                    .resize(128, 128)
+                    .png()
                     .toBuffer();
                 
                 avatarBase64 = pngBuffer.toString('base64');
-                console.log(`✅ Converted to PNG (${avatarBase64.length} chars base64, ${pngBuffer.length} bytes)`);
-                
-                // Verify PNG signature
-                const sig = [pngBuffer[0], pngBuffer[1], pngBuffer[2], pngBuffer[3]];
-                console.log('🔍 PNG signature:', sig.join(', '), '(should be 137, 80, 78, 71)');
+                console.log(`✅ Converted to PNG base64 (${avatarBase64.length} chars)`);
                 
             } catch (error) {
                 console.error('❌ Error processing Discord avatar:', error.message);
             }
-        }
-
-        // Create proxy URL for Roblox (doesn't require Mesh/Image API)
-        let discordAvatarProxy = null;
-        if (record.discordAvatar) {
-            // Remove protocol and use weserv.nl proxy
-            const cleanUrl = record.discordAvatar.replace(/^https?:\/\//, '');
-            discordAvatarProxy = `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}&w=128&h=128&fit=cover&output=png`;
-            console.log('🔗 Proxy URL:', discordAvatarProxy);
         }
 
         console.log(`✅ Code valid for ${discordId}`);
@@ -715,8 +708,8 @@ app.post('/check-code', async (req, res) => {
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
-            discordAvatarBase64: avatarBase64,
             discordAvatarProxy: discordAvatarProxy, // Proxied URL that Roblox can load
+            discordAvatarBase64: avatarBase64, // Base64 backup
             robloxUsername: robloxUsername
         });
     } catch (error) {
@@ -724,6 +717,7 @@ app.post('/check-code', async (req, res) => {
         res.status(500).json({ success: false, error: 'Internal server error' });
     }
 });
+
 // UPDATED: Verify webhook - now expects confirmation
 app.post('/verify-webhook', async (req, res) => {
     try {
