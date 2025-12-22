@@ -629,7 +629,7 @@ app.get('/health', (req, res) => {
 // NEW: Check code endpoint - returns Discord info for confirmation screen
 app.post('/check-code', async (req, res) => {
     try {
-        const { secret, enteredCode } = req.body;
+        const { secret, enteredCode, robloxId } = req.body;
 
         console.log("🔍 Code check received:", { enteredCode: enteredCode ? '✓' : '✗' });
 
@@ -654,13 +654,24 @@ app.post('/check-code', async (req, res) => {
             return res.status(400).json({ success: false, error: 'Code expired' });
         }
 
-        // Return Discord user info for confirmation screen
+        let robloxUsername = 'Unknown';
+        try { 
+            const response = await Promise.race([
+                axios.get(`https://users.roblox.com/v1/users/${robloxId}`),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000))
+            ]);
+            robloxUsername = response.data.name; 
+        } catch (error) {
+            console.error('Error fetching Roblox username:', error);
+        }
+
         console.log(`✅ Code valid for ${discordId}`);
         res.json({
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
-            discordAvatar: record.discordAvatar
+            discordAvatar: record.discordAvatar,
+            robloxUsername: robloxUsername
         });
     } catch (error) {
         console.error('Check code error:', error);
