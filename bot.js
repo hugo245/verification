@@ -701,12 +701,22 @@ app.post('/check-code', async (req, res) => {
             }
         }
 
+        // Create proxy URL for Roblox (doesn't require Mesh/Image API)
+        let discordAvatarProxy = null;
+        if (record.discordAvatar) {
+            // Remove protocol and use weserv.nl proxy
+            const cleanUrl = record.discordAvatar.replace(/^https?:\/\//, '');
+            discordAvatarProxy = `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}&w=128&h=128&fit=cover&output=png`;
+            console.log('🔗 Proxy URL:', discordAvatarProxy);
+        }
+
         console.log(`✅ Code valid for ${discordId}`);
         res.json({
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
             discordAvatarBase64: avatarBase64,
+            discordAvatarProxy: discordAvatarProxy, // Proxied URL that Roblox can load
             robloxUsername: robloxUsername
         });
     } catch (error) {
