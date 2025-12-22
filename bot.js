@@ -627,6 +627,7 @@ app.get('/health', (req, res) => {
 });
 
 // NEW: Check code endpoint - returns Discord info for confirmation screen
+// NEW: Check code endpoint - returns Discord info for confirmation screen
 app.post('/check-code', async (req, res) => {
     try {
         const { secret, enteredCode, robloxId } = req.body;
@@ -665,12 +666,27 @@ app.post('/check-code', async (req, res) => {
             console.error('Error fetching Roblox username:', error);
         }
 
+        // Fetch Discord avatar as binary and convert to base64
+        let avatarBase64 = null;
+        if (record.discordAvatar) {
+            try {
+                const avatarResponse = await axios.get(record.discordAvatar, {
+                    responseType: 'arraybuffer',
+                    timeout: 5000
+                });
+                avatarBase64 = Buffer.from(avatarResponse.data).toString('base64');
+                console.log(`✅ Fetched avatar (${avatarBase64.length} chars base64)`);
+            } catch (error) {
+                console.error('Error fetching Discord avatar:', error);
+            }
+        }
+
         console.log(`✅ Code valid for ${discordId}`);
         res.json({
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
-            discordAvatar: record.discordAvatar,
+            discordAvatarBase64: avatarBase64, // Send as base64
             robloxUsername: robloxUsername
         });
     } catch (error) {
