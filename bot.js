@@ -667,15 +667,14 @@ app.post('/check-code', async (req, res) => {
             console.error('Error fetching Roblox username:', error);
         }
 
-        // Create proxy URL for Roblox (doesn't require Mesh/Image API)
+        // Create proxy URL for Roblox using Roproxy (designed for Roblox)
         let discordAvatarProxy = null;
         let avatarBase64 = null;
         
         if (record.discordAvatar) {
-            // Create proxy URL
-            const cleanUrl = record.discordAvatar.replace(/^https?:\/\//, '');
-            discordAvatarProxy = `https://images.weserv.nl/?url=${encodeURIComponent(cleanUrl)}&w=128&h=128&fit=cover&output=png`;
-            console.log('🔗 Proxy URL created:', discordAvatarProxy);
+            // Use Roproxy - specifically designed for Roblox image loading
+            discordAvatarProxy = `https://roproxy.com/${record.discordAvatar}`;
+            console.log('🔗 Roproxy URL created:', discordAvatarProxy);
             
             // Also fetch and convert to base64 for backup
             try {
