@@ -628,6 +628,9 @@ app.get('/health', (req, res) => {
 });
 
 
+// Add at the top with other requires
+const sharp = require('sharp');
+
 // Updated /check-code endpoint with PNG conversion
 app.post('/check-code', async (req, res) => {
     try {
@@ -667,14 +670,24 @@ app.post('/check-code', async (req, res) => {
             console.error('Error fetching Roblox username:', error);
         }
 
-        // Create proxy URL for Roblox using Roproxy (designed for Roblox)
+        // Create multiple proxy URLs for Roblox (try different services)
         let discordAvatarProxy = null;
+        let discordAvatarProxy2 = null;
+        let discordAvatarProxy3 = null;
         let avatarBase64 = null;
         
         if (record.discordAvatar) {
-            // Use Roproxy - specifically designed for Roblox image loading
+            // Try multiple proxy services
             discordAvatarProxy = `https://roproxy.com/${record.discordAvatar}`;
-            console.log('🔗 Roproxy URL created:', discordAvatarProxy);
+            
+            // Alternative: Remove https:// for some proxies
+            const cleanUrl = record.discordAvatar.replace(/^https?:\/\//, '');
+            discordAvatarProxy2 = `https://images.weserv.nl/?url=${cleanUrl}&w=128&h=128&output=png`;
+            discordAvatarProxy3 = `https://api.allorigins.win/raw?url=${encodeURIComponent(record.discordAvatar)}`;
+            
+            console.log('🔗 Roproxy URL:', discordAvatarProxy);
+            console.log('🔗 Weserv URL:', discordAvatarProxy2);
+            console.log('🔗 AllOrigins URL:', discordAvatarProxy3);
             
             // Also fetch and convert to base64 for backup
             try {
@@ -709,8 +722,11 @@ app.post('/check-code', async (req, res) => {
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
-            discordAvatarProxy: discordAvatarProxy, // Proxied URL that Roblox can load
-            discordAvatarBase64: avatarBase64, // Base64 backup
+            discordAvatarProxy: discordAvatarProxy,
+            discordAvatarProxy2: discordAvatarProxy2,
+            discordAvatarProxy3: discordAvatarProxy3,
+            discordAvatarOriginal: record.discordAvatar, // Original URL for debugging
+            discordAvatarBase64: avatarBase64,
             robloxUsername: robloxUsername
         });
     } catch (error) {
