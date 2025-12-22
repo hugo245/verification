@@ -2,6 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 const { Client, GatewayIntentBits, SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } = require('discord.js');
 const express = require('express');
 const axios = require('axios');
+const sharp = require('sharp');
 
 const client = new Client({
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.DirectMessages],
@@ -626,8 +627,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// NEW: Check code endpoint - returns Discord info for confirmation screen
-// NEW: Check code endpoint - returns Discord info for confirmation screen
 app.post('/check-code', async (req, res) => {
     try {
         const { secret, enteredCode, robloxId } = req.body;
@@ -666,18 +665,39 @@ app.post('/check-code', async (req, res) => {
             console.error('Error fetching Roblox username:', error);
         }
 
-        // Fetch Discord avatar as binary and convert to base64
+        // Fetch Discord avatar and ensure it's PNG format
         let avatarBase64 = null;
         if (record.discordAvatar) {
             try {
+                console.log('📥 Fetching avatar from:', record.discordAvatar);
+                
+                // Fetch the avatar
                 const avatarResponse = await axios.get(record.discordAvatar, {
                     responseType: 'arraybuffer',
-                    timeout: 5000
+                    timeout: 10000,
+                    headers: {
+                        'User-Agent': 'DiscordBot (VerificationBot, 1.0)'
+                    }
                 });
-                avatarBase64 = Buffer.from(avatarResponse.data).toString('base64');
-                console.log(`✅ Fetched avatar (${avatarBase64.length} chars base64)`);
+                
+                console.log('✅ Avatar fetched, size:', avatarResponse.data.byteLength, 'bytes');
+                console.log('📋 Content-Type:', avatarResponse.headers['content-type']);
+                
+                // Convert to PNG using sharp (handles WebP, JPEG, PNG, etc.)
+                const pngBuffer = await sharp(avatarResponse.data)
+                    .resize(128, 128) // Resize to reasonable size
+                    .png() // Convert to PNG
+                    .toBuffer();
+                
+                avatarBase64 = pngBuffer.toString('base64');
+                console.log(`✅ Converted to PNG (${avatarBase64.length} chars base64, ${pngBuffer.length} bytes)`);
+                
+                // Verify PNG signature
+                const sig = [pngBuffer[0], pngBuffer[1], pngBuffer[2], pngBuffer[3]];
+                console.log('🔍 PNG signature:', sig.join(', '), '(should be 137, 80, 78, 71)');
+                
             } catch (error) {
-                console.error('Error fetching Discord avatar:', error);
+                console.error('❌ Error processing Discord avatar:', error.message);
             }
         }
 
@@ -686,15 +706,14 @@ app.post('/check-code', async (req, res) => {
             success: true,
             discordId: discordId,
             discordTag: record.discordTag,
-            discordAvatarBase64: avatarBase64, // Send as base64
+            discordAvatarBase64: avatarBase64,
             robloxUsername: robloxUsername
         });
     } catch (error) {
-        console.error('Check code error:', error);
+        console.error('❌ Check code error:', error);
         res.status(500).json({ success: false, error: 'Internal server error' });
     }
 });
-
 // UPDATED: Verify webhook - now expects confirmation
 app.post('/verify-webhook', async (req, res) => {
     try {
