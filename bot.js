@@ -627,6 +627,8 @@ app.get('/health', (req, res) => {
     });
 });
 
+
+// Updated /check-code endpoint with PNG conversion
 app.post('/check-code', async (req, res) => {
     try {
         const { secret, enteredCode, robloxId } = req.body;
