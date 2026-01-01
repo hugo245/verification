@@ -627,10 +627,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-
-// Add at the top with other requires
-const sharp = require('sharp');
-
 // Updated /check-code endpoint with PNG conversion
 app.post('/check-code', async (req, res) => {
     try {
